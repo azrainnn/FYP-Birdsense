@@ -1,29 +1,84 @@
 ======================================================================
-Classification Report — Held-out Test Set
+Classification Report — Held-out Test Set (majority vote over BirdNET windows)
 ======================================================================
                               precision    recall  f1-score   support
 
-        bornean_black_magpie      0.800     0.923     0.857        13
-         white-crowned_shama      0.833     0.909     0.870        11
-    bold-striped_tit-babbler      1.000     0.727     0.842        11
-           blue-eared_barbet      1.000     0.964     0.982        28
-         black-crowned_pitta      1.000     0.889     0.941         9
+        bornean_black_magpie      0.857     0.923     0.889        13
+         white-crowned_shama      1.000     0.818     0.900        11
+    bold-striped_tit-babbler      0.889     0.727     0.800        11
+           blue-eared_barbet      1.000     0.929     0.963        28
+         black-crowned_pitta      0.889     0.889     0.889         9
          golden-naped_barbet      0.889     1.000     0.941         8
-             bornean_treepie      0.833     0.714     0.769         7
-           blue-headed_pitta      1.000     0.833     0.909         6
-greater_racket-tailed_drongo      0.930     0.981     0.955        54
-         rhinoceros_hornbill      0.900     0.900     0.900        10
-      rufous-crowned_babbler      0.833     1.000     0.909        15
-       white-chested_babbler      0.944     0.895     0.919        19
+             bornean_treepie      1.000     0.714     0.833         7
+           blue-headed_pitta      1.000     1.000     1.000         7
+greater_racket-tailed_drongo      0.889     1.000     0.941        56
+         rhinoceros_hornbill      0.909     0.909     0.909        11
+      rufous-crowned_babbler      0.938     1.000     0.968        15
+       white-chested_babbler      0.895     0.895     0.895        19
         bornean_banded_pitta      1.000     0.800     0.889         5
        bornean_ground_cuckoo      1.000     1.000     1.000         6
-         bornean_bristlehead      1.000     0.800     0.889         5
+         bornean_bristlehead      0.750     0.600     0.667         5
 
-                    accuracy                          0.923       207
-                   macro avg      0.931     0.889     0.905       207
-                weighted avg      0.928     0.923     0.922       207
+                    accuracy                          0.919       211
+                   macro avg      0.927     0.880     0.899       211
+                weighted avg      0.922     0.919     0.917       211
 
-Macro F1 : 0.9048
+Macro F1 : 0.8989
 Target   : 0.8
+Files with no embeddings (counted as class 0): 0
 
-[PASS] F1 0.9048 >= 0.8 — safe to run export.py.
+======================================================================
+Soft-vote metrics (mean softmax over windows — matches the web API)
+======================================================================
+Top-1 accuracy : 0.9431
+Top-3 accuracy : 0.9905
+Macro F1       : 0.9383
+
+======================================================================
+Confusion Matrix (rows = true, columns = predicted; majority vote)
+======================================================================
+true\pred   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
+        0  12  0  0  0  0  0  0  0  1  0  0  0  0  0  0
+        1   0  9  0  0  0  0  0  0  1  0  0  0  0  0  1
+        2   1  0  8  0  0  0  0  0  2  0  0  0  0  0  0
+        3   0  0  0 26  1  0  0  0  1  0  0  0  0  0  0
+        4   1  0  0  0  8  0  0  0  0  0  0  0  0  0  0
+        5   0  0  0  0  0  8  0  0  0  0  0  0  0  0  0
+        6   0  0  0  0  0  1  5  0  1  0  0  0  0  0  0
+        7   0  0  0  0  0  0  0  7  0  0  0  0  0  0  0
+        8   0  0  0  0  0  0  0  0 56  0  0  0  0  0  0
+        9   0  0  0  0  0  0  0  0  0 10  0  1  0  0  0
+       10   0  0  0  0  0  0  0  0  0  0 15  0  0  0  0
+       11   0  0  1  0  0  0  0  0  0  0  1 17  0  0  0
+       12   0  0  0  0  0  0  0  0  0  1  0  0  4  0  0
+       13   0  0  0  0  0  0  0  0  0  0  0  0  0  6  0
+       14   0  0  0  0  0  0  0  0  1  0  0  1  0  0  3
+
+Index legend:
+   0 = bornean_black_magpie
+   1 = white-crowned_shama
+   2 = bold-striped_tit-babbler
+   3 = blue-eared_barbet
+   4 = black-crowned_pitta
+   5 = golden-naped_barbet
+   6 = bornean_treepie
+   7 = blue-headed_pitta
+   8 = greater_racket-tailed_drongo
+   9 = rhinoceros_hornbill
+  10 = rufous-crowned_babbler
+  11 = white-chested_babbler
+  12 = bornean_banded_pitta
+  13 = bornean_ground_cuckoo
+  14 = bornean_bristlehead
+(image: confusion_matrix.png)
+
+======================================================================
+SNR Field Test (white Gaussian noise added to holdout audio; majority vote)
+======================================================================
+Condition   Accuracy  Macro-F1  Target
+clean         0.9194    0.8989  (reference)
+20 dB         0.9336    0.9311  >= 0.80 MET
+10 dB         0.8863    0.8602  >= 0.65 MET
+5 dB          0.8246    0.7951  report only
+
+[PASS] F1 0.8989 >= 0.8 — safe to run export.py.

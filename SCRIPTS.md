@@ -66,6 +66,11 @@ Scripts to be added for the web application: `backend/app.py`, `backend/inferenc
 | `NUM_SPECIES` | `15` | output classes — provisional; update once species list is finalised (target: 25–30) |
 | `TARGET_F1` | `0.80` | minimum macro-F1 required before exporting |
 | `SILENCE_THRESHOLD` | `0.01` | RMS threshold for noise gate in preprocess.py; windows below this are dropped |
+| `BIRDNET_SAMPLE_RATE` | `48000` | Hz — BirdNET's native input rate; used by evaluate.py's SNR test |
+| `SNR_LEVELS_DB` | `(20, 10, 5)` | simulated field-noise levels in evaluate.py: quiet, moderate, loud |
+| `SNR_TARGET_F1` | `{20: 0.80, 10: 0.65}` | minimum macro-F1 per SNR level (5 dB is report-only) |
+| `SNR_NOISE_SEED` | `42` | fixed seed so SNR results are reproducible |
+| `TOP_K` | `3` | top-k accuracy reported by evaluate.py (matches the web UI's top-3) |
 
 ---
 
@@ -267,7 +272,7 @@ python scripts/extract_embeddings.py
 | | Path |
 |---|---|
 | Input | `species_selected.csv`, `dataset/processed/<species>/*.wav` |
-| Output (cache) | `models/checkpoints/embeddings_train.npz` (`X` float32 `(N,1024)`, `y` int32 `(N,)`, `class_names`) |
+| Output (cache) | `models/checkpoints/embeddings_train.npz` (`X` float32 `(N,1024)`, `y` int32 `(N,)`, `class_names`, `paths` — repo-relative source clip path per row, used by `train.py` to group clips by recording) |
 
 **Functions:**
 
@@ -300,6 +305,8 @@ python scripts/train.py
 | Input | `models/checkpoints/embeddings_train.npz` |
 | Output (model) | `models/checkpoints/best_model.keras` |
 | Output (labels) | `models/checkpoints/label_map.json` |
+| Output (history) | `models/checkpoints/training_history.json` (per-epoch loss / accuracy / val_loss / val_accuracy / learning_rate) |
+| Output (curves) | `models/checkpoints/training_curves.png` (train vs val loss and accuracy, best epoch marked) |
 
 **Key constants (top of file):**
 
@@ -309,7 +316,8 @@ python scripts/train.py
 | `BATCH_SIZE` | `32` | Training batch size |
 | `EPOCHS` | `60` | Maximum training epochs |
 | `LEARNING_RATE` | `1e-3` | Adam learning rate |
-| `VAL_FRACTION` | `0.18` | Fraction of clips held for validation |
+| `GROUP_FOLDS` | `6` | Validation = one fold of a stratified group k-fold (~17% of clips), split **by recording** |
+| `WINDOW_SUFFIX` | `_\d+$` | Regex stripping the window index from a clip stem to recover its recording id |
 | `DROPOUT_RATE` | `0.4` | Dropout applied after each Dense layer |
 | `PATIENCE_STOP` | `10` | EarlyStopping patience (epochs) |
 | `PATIENCE_LR` | `4` | ReduceLROnPlateau patience (epochs) |
@@ -318,12 +326,17 @@ python scripts/train.py
 
 | Function | What it does |
 |---|---|
-| `load_embeddings(path)` | Loads `embeddings_train.npz` → `(X, y, class_names)` |
+| `load_embeddings(path)` | Loads `embeddings_train.npz` → `(X, y, class_names, paths)`; exits if `paths` is missing (re-run `extract_embeddings.py`) |
+| `recording_ids(paths)` | Maps each clip path to its source-recording id (`<species>/<stem without window index>`) |
+| `grouped_split_indices(y, groups)` | Train/val indices from `StratifiedGroupKFold` — no recording appears on both sides (exits if one does) |
 | `build_model(num_classes)` | Returns uncompiled Keras model: Input(1024) → Dropout → Dense(256, relu) → Dropout → Dense(num_classes, softmax) |
 | `make_callbacks(ckpt_path)` | ModelCheckpoint / EarlyStopping / ReduceLROnPlateau / TensorBoard |
+| `save_training_history(history, out_dir)` | Writes `training_history.json` and `training_curves.png`; prints epochs run, best val_loss epoch, final train/val accuracy |
 | `main()` | Entry point — orchestrates the full training run |
 
 **Notes:**
+- The validation split is grouped by source recording. A random clip-level split leaked ~7.5 clips per recording across train/val and inflated validation accuracy (~97% vs ~89% grouped); see `experiments.py`.
+- `ModelCheckpoint` saves by `val_accuracy` while `EarlyStopping` restores best `val_loss` weights in memory, so `best_model.keras` can be a different epoch from the restored weights.
 - Class weights are computed automatically (`sklearn.compute_class_weight`) to handle species imbalance.
 - Label order in `label_map.json` defines the class index used by `labels.txt`.
 
@@ -331,7 +344,7 @@ python scripts/train.py
 
 ## `scripts/evaluate.py`
 
-**Purpose:** Evaluates the trained classifier head on the held-out test set (`dataset/test_holdout/`). Extracts a BirdNET embedding per internal 3-second window for each holdout MP3, classifies each window, and aggregates predictions per file via majority vote. Reports per-species precision/recall/F1 plus macro-F1. Writes `eval_report.txt` which is the export gate for `export.py`.
+**Purpose:** Evaluates the trained classifier head on the held-out test set (`dataset/test_holdout/`). Extracts a BirdNET embedding per internal 3-second window for each holdout MP3, classifies each window, and aggregates predictions per file via majority vote. Reports per-species precision/recall/F1 plus macro-F1 (the export gate), soft-vote top-1/top-3 accuracy (as in the web API), a confusion matrix, and an SNR field test (20 / 10 / 5 dB). Writes `eval_report.txt` which is the export gate for `export.py`.
 
 **Run after `train.py`:**
 ```bash
@@ -343,20 +356,69 @@ python scripts/evaluate.py
 | | Path |
 |---|---|
 | Input | `models/checkpoints/best_model.keras`, `models/checkpoints/label_map.json`, `dataset/test_holdout/<species>/*.mp3` |
-| Output | `models/checkpoints/eval_report.txt` (classification report + `[PASS]` or `[FAIL]`) |
+| Output (report) | `models/checkpoints/eval_report.txt` — classification report, soft-vote top-1/top-3, confusion matrix, SNR table, and the `[PASS]` / `[FAIL]` gate line |
+| Output (image) | `models/checkpoints/confusion_matrix.png` (row-normalised heatmap, counts annotated) |
+| Output (metrics) | `models/checkpoints/eval_metrics.json` (macro-F1, soft-vote metrics, SNR rows, confusion matrix) |
 
 **Functions:**
 
 | Function | What it does |
 |---|---|
+| `Embedder` | Wraps BirdNET `Analyzer`; `embed(audio)` returns per-window 1024-d embeddings and reinitialises the analyzer after 3 consecutive failures |
 | `load_label_map(path)` | Loads `label_map.json` written by `train.py` |
-| `predict_file(model, analyzer, mp3_path)` | Extracts BirdNET embeddings per window for one MP3, classifies each, returns the majority-vote class |
-| `main()` | Entry point — evaluates all holdout files and prints/saves the classification report |
+| `load_audio(path)` | Reads a holdout file with soundfile → mono float32 at 48 kHz |
+| `add_noise_at_snr(audio, snr_db, rng)` | Adds white Gaussian noise scaled to the target SNR |
+| `collect_holdout(class_names, label_to_idx)` | Lists holdout MP3s and integer labels |
+| `predict_condition(...)` | Classifies all files at one noise condition → majority-vote predictions, soft-vote probabilities, count of files with no embeddings |
+| `top_k_accuracy(y_true, probs, k)` | Top-k accuracy from soft-vote probabilities |
+| `format_confusion_matrix(cm, names)` / `save_confusion_matrix_png(cm, names, path)` | Text and PNG confusion matrix |
+| `run_snr_test(...)` / `format_snr_section(...)` | Evaluates and renders accuracy / macro-F1 at each `SNR_LEVELS_DB` level against `SNR_TARGET_F1` |
+| `build_gate_message(macro_f1)` | Builds the only `[PASS]` / `[FAIL]` line |
+| `main()` | Entry point — evaluates clean + noisy conditions and prints/saves everything |
 
 **Notes:**
-- BirdNET's own internal windowing/resampling (3s @ 48kHz) replaces the manual windowing/noise-gate logic previously done by hand.
-- File-level prediction = majority vote across window-level argmax predictions.
-- `eval_report.txt` ends with `[PASS]` or `[FAIL]` — `export.py` checks this line.
+- The export gate is unchanged: clean-audio majority-vote macro-F1 ≥ `TARGET_F1`. SNR results are informational and never affect the gate.
+- Soft-vote (mean softmax over windows) is reported separately because the Flask API uses it; majority vote is kept for the gate so results stay comparable with earlier runs.
+- SNR noise is white Gaussian noise, not real forest ambience — it is a reproducible proxy (fixed seed), so absolute numbers will differ from real field conditions.
+- SNR targets are shown as `MET` / `NOT MET` (never `PASS` / `FAIL`), because `export.py` looks for the literal `[PASS]` in the report.
+- Holdout audio is decoded with soundfile and fed to BirdNET via `RecordingBuffer`, so no ffmpeg is needed for evaluation.
+
+---
+
+## `scripts/experiments.py`
+
+**Purpose:** Research experiments on the same held-out test set, using cached embeddings (no GPU, no BirdNET retraining): (1) random clip-level vs. recording-grouped validation split, (2) majority-class and logistic-regression baselines vs. the Dense head, (3) TFLite quantisation (float32 / float16 / dynamic int8 / full int8) of `best_model.keras` — size, accuracy, agreement with float32, per-window latency.
+
+**Run after `extract_embeddings.py` and `train.py` (run it alone — the latency benchmark is CPU-sensitive):**
+```bash
+python scripts/experiments.py
+```
+
+**Inputs / Outputs:**
+
+| | Path |
+|---|---|
+| Input | `models/checkpoints/embeddings_train.npz`, `best_model.keras`, `label_map.json`, `dataset/test_holdout/<species>/*.mp3` |
+| Output (cache) | `models/checkpoints/embeddings_holdout.npz` (`X` window embeddings, `file_idx`, `y_files`, `embed_seconds`) — delete to recompute |
+| Output (report) | `models/checkpoints/experiments_report.txt`, `models/checkpoints/experiments.json` |
+
+**Key constants:** `SEEDS` `(0, 1, 2)` model-init seeds for the split comparison; `LR_MAX_ITER` `2000`; `REPRESENTATIVE_SAMPLES` `200` calibration embeddings for full-int8; `LATENCY_WARMUP` `20` invokes excluded from timing.
+
+**Functions:**
+
+| Function | What it does |
+|---|---|
+| `load_holdout` / `compute_holdout_embeddings` | Embeds the holdout MP3s once with BirdNET (timed) and caches them |
+| `score_files(window_probs, data, num_classes)` | Per-file soft-vote top-1/top-3/macro-F1 and majority-vote macro-F1 |
+| `fit_head(...)` | Trains the Dense head with `train.py`'s hyper-parameters and early stopping |
+| `run_split_experiment` | Trains on random vs. grouped splits × 3 seeds; reports val vs. test |
+| `run_baselines` | Majority class and `StandardScaler` + `LogisticRegression` on the grouped split |
+| `convert_variants` / `run_tflite` / `run_quantisation` | Converts to four TFLite precisions and benchmarks each on the holdout windows (1 thread) |
+| `format_*_table`, `main()` | Report rendering and entry point |
+
+**Notes:**
+- Latency is measured on the dev machine's CPU for the Dense head only; it is not a Raspberry Pi / Jetson number. BirdNET's per-window time is reported alongside for scale.
+- Never writes `best_model.keras`, `label_map.json`, `eval_report.txt`, or `models/export/`.
 
 ---
 

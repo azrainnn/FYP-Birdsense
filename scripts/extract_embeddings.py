@@ -128,6 +128,7 @@ def main() -> None:
 
     embeddings: list[np.ndarray] = []
     labels: list[int] = []
+    kept_paths: list[str] = []
     consecutive_failures = 0
     for i, (path, label) in enumerate(zip(file_paths, int_labels)):
         if i % 50 == 0:
@@ -149,13 +150,14 @@ def main() -> None:
             consecutive_failures = 0
         embeddings.append(vec)
         labels.append(label)
+        kept_paths.append(Path(path).relative_to(_ROOT).as_posix())
     print(f"  {total}/{total}\n")
 
     X = np.stack(embeddings).astype(np.float32)
     y = np.array(labels, dtype=np.int32)
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    np.savez(EMBEDDINGS_PATH, X=X, y=y, class_names=np.array(class_names))
+    np.savez(EMBEDDINGS_PATH, X=X, y=y, class_names=np.array(class_names), paths=np.array(kept_paths))
     print(f"Embeddings saved: {EMBEDDINGS_PATH}  (X shape {X.shape})")
     print(f"Skipped: {total - len(embeddings)} clip(s) failed extraction.")
 
